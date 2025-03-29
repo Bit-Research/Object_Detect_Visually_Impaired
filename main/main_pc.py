@@ -1,15 +1,18 @@
 import base64
 import io
 import logging
+import sys
+import os
 import requests
 import cv2
 import numpy as np
-import json
-import smtplib
-import threading
+import matplotlib.pyplot as plt
 from pydub import AudioSegment
 from pydub.playback import play
-import RPi.GPIO as GPIO
+import threading
+import json
+import smtplib
+import keyboard
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -90,6 +93,7 @@ def show_loud_Object(image, output_json):
         
         text_json = {"text": class_name}
         output_json = send_request("text_to_speech", "INLINE", text_json)
+        #logging.info(output_json)
         if output_json['status'] == "SUCCESS":
             logging.info("Playing audio now...")
             decode_and_play_audio(output_json['data'])
@@ -155,19 +159,6 @@ def send_emergency_email():
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-# Setup GPIO for emergency button
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-def emergency_button_callback(channel):
-    send_emergency_email()
-
-GPIO.add_event_detect(18, GPIO.FALLING, callback=emergency_button_callback, bouncetime=300)
-logging.info("Press the emergency button to send an emergency email.")
-
-try:
-    while True:
-        pass
-except KeyboardInterrupt:
-    GPIO.cleanup()
-    logging.info("GPIO cleanup done.")
+keyboard.add_hotkey('e', send_emergency_email)
+logging.info("Press 'E' to send an emergency email.")
+keyboard.wait('esc')
