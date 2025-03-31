@@ -2,7 +2,6 @@ import base64
 import io
 import logging
 import requests
-import cv2
 import numpy as np
 import json
 import smtplib
@@ -10,11 +9,17 @@ import threading
 from pydub import AudioSegment
 from pydub.playback import play
 import RPi.GPIO as GPIO
+from picamera import PiCamera
+from picamera.array import PiRGBArray
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 SERVER_URL = "http://34.93.156.134:5000/web_server"
+
+# Create a lock for audio playback
+audio_lock = threading.Lock()
 
 def send_request(service, req_type, params, email=None, phone=None):
     """Send request to the server and handle FUTURE_CALL polling."""
@@ -54,15 +59,16 @@ def decode_and_play_audio(encoded_audio):
         logging.info("Playing audio...")
         
         # Play audio in a separate thread to avoid blocking
-        threading.Thread(target=play, args=(audio,)).start()
-        logging.info("Audio playback started in a separate thread.")
+        with audio_lock:
+            play(audio)
+        logging.info("Audio playback completed.")
     except Exception as e:
         logging.error(f"Error playing audio: {e}")
     finally:
         audio_buffer.close()
         logging.info("Audio buffer closed.")
 
-def show_loud_Object(image, output_json):
+def loud_Object(image, output_json):
     """
     Display the results of object detection.
     
@@ -81,38 +87,32 @@ def show_loud_Object(image, output_json):
             x, y, w, h = obj['bbox']['x'], obj['bbox']['y'], obj['bbox']['width'], obj['bbox']['height']
             class_name = obj['class']
             confidence = obj['confidence']
-            color = obj['color']
-            cv2.rectangle(annotated_image, (x, y), (x + w, y + h), color, 2)
-            label = f"{class_name}: {confidence:.2f}"
-            cv2.putText(annotated_image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        cv2.imshow('Annotated Image', annotated_image)
-        cv2.waitKey(1)
-        
-        text_json = {"text": class_name}
-        output_json = send_request("text_to_speech", "INLINE", text_json)
-        if output_json['status'] == "SUCCESS":
-            logging.info("Playing audio now...")
-            decode_and_play_audio(output_json['data'])
+            color = obj['color']        
+            text_json = {"text": class_name}
+            output_json = send_request("text_to_speech", "INLINE", text_json)
+            if output_json['status'] == "SUCCESS":
+                logging.info("Playing audio now...")
+                threading.Thread(target=decode_and_play_audio, args=(output_json['data'],)).start()
     except Exception as e:
         logging.error(f"Failed to display results: {str(e)}")
 
 def fetch_images_from_camera():
     """Continuously fetch images from the camera and process them."""
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        logging.error("Failed to open camera.")
-        return
+    camera = PiCamera()
+    raw_capture = PiRGBArray(camera)
     
     while True:
         try:
-            ret, frame = cap.read()
-            if not ret:
-                logging.error("Failed to capture image from camera.")
-                continue
+            camera.capture(raw_capture, format="bgr")
+            frame = raw_capture.array
             
-            # Encode the frame as base64
-            _, buffer = cv2.imencode('.jpg', frame)
-            image_b64 = base64.b64encode(buffer).decode('utf-8')
+            # Convert the frame to a PIL image
+            image = Image.fromarray(frame)
+            
+            # Encode the image as base64
+            buffered = io.BytesIO()
+            image.save(buffered, format="JPEG")
+            image_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             
             # Create the sub_json object with image data
             image_json = {"image_b64": image_b64}
@@ -120,16 +120,17 @@ def fetch_images_from_camera():
             output_json = send_request("ObjDetection", "INLINE", image_json)
             if output_json and output_json['status'] == "SUCCESS":
                 logging.info("Received successful response from ObjDetection.")
-                show_loud_Object(frame, output_json['data'])
+                loud_Object(frame, output_json['data'])
             else:
                 logging.error(f"Failed to get a successful response: {output_json}")
+            
+            raw_capture.truncate(0)
         except Exception as e:
             logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
             break
     
-    cap.release()
-    cv2.destroyAllWindows()
-    logging.info("Camera released and windows destroyed.")
+    camera.close()
+    logging.info("Camera released.")
 
 # Start the image fetching thread
 image_thread = threading.Thread(target=fetch_images_from_camera)
