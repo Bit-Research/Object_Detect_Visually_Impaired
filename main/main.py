@@ -135,7 +135,7 @@ def fetch_images_from_camera():
         finally:
             camera.stop()
             camera.close()
-            logging.info("Camera released
+            logging.info("Camera released")
 
 # Start the image fetching thread
 image_thread = threading.Thread(target=fetch_images_from_camera)
