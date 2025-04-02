@@ -112,7 +112,7 @@ def fetch_images_from_camera():
             image = Image.fromarray(frame)
             # Convert RGBA to RGB
             if image.mode == 'RGBA':
-                image = image.convert('RGB'            
+                image = image.convert('RGB')            
           
             # Encode the image as base64
             buffered = io.BytesIO()
@@ -129,14 +129,13 @@ def fetch_images_from_camera():
             else:
                 logging.error(f"Failed to get a successful response: {output_json}")
             
-            raw_capture.truncate(0)
         except Exception as e:
             logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
-            break
-    
-    camera.stop()
-    camera.close()
-    logging.info("Camera released.")
+
+        finally:
+            camera.stop()
+            camera.close()
+            logging.info("Camera released
 
 # Start the image fetching thread
 image_thread = threading.Thread(target=fetch_images_from_camera)
