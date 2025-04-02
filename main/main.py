@@ -91,7 +91,8 @@ def loud_Object(image, output_json):
             output_json = send_request("text_to_speech", "INLINE", text_json)
             if output_json['status'] == "SUCCESS":
                 logging.info("Playing audio now...")
-                threading.Thread(target=decode_and_play_audio, args=(output_json['data'],)).start()
+                #threading.Thread(target=decode_and_play_audio, args=(output_json['data'],)).start()
+                decode_and_play_audio(output_json['data'])
     except Exception as e:
         logging.error(f"Failed to display results: {str(e)}")
 
