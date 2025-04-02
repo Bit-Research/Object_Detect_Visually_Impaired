@@ -9,7 +9,7 @@ import threading
 from pydub import AudioSegment
 from pydub.playback import play
 import RPi.GPIO as GPIO
-from picamera import PiCamera2
+from picamera2 import Picamera2
 from PIL import Image
 
 # Configure logging
@@ -97,7 +97,7 @@ def loud_Object(image, output_json):
 
 def fetch_images_from_camera():
     """Continuously fetch images from the camera and process them."""
-    camera = PiCamera2()
+    camera = Picamera2()
     camera.configure(camera.create_preview_configuration())
 
     # Start the camera
@@ -110,6 +110,9 @@ def fetch_images_from_camera():
 
             # Convert the frame to a PIL image
             image = Image.fromarray(frame)
+            # Convert RGBA to RGB
+            if image.mode == 'RGBA':
+                image = image.convert('RGB'            
           
             # Encode the image as base64
             buffered = io.BytesIO()
