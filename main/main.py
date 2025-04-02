@@ -9,8 +9,7 @@ import threading
 from pydub import AudioSegment
 from pydub.playback import play
 import RPi.GPIO as GPIO
-from picamera import PiCamera
-from picamera.array import PiRGBArray
+from picamera import PiCamera2
 from PIL import Image
 
 # Configure logging
@@ -98,17 +97,20 @@ def loud_Object(image, output_json):
 
 def fetch_images_from_camera():
     """Continuously fetch images from the camera and process them."""
-    camera = PiCamera()
-    raw_capture = PiRGBArray(camera)
+    camera = PiCamera2()
+    camera.configure(camera.create_preview_configuration())
+
+    # Start the camera
+    camera.start() 
     
     while True:
         try:
-            camera.capture(raw_capture, format="bgr")
-            frame = raw_capture.array
-            
+            # Capture an image
+            frame = camera.capture_array()
+
             # Convert the frame to a PIL image
             image = Image.fromarray(frame)
-            
+          
             # Encode the image as base64
             buffered = io.BytesIO()
             image.save(buffered, format="JPEG")
@@ -129,6 +131,7 @@ def fetch_images_from_camera():
             logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
             break
     
+    camera.stop()
     camera.close()
     logging.info("Camera released.")
 
