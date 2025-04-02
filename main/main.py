@@ -133,10 +133,9 @@ def fetch_images_from_camera():
         except Exception as e:
             logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
 
-        finally:
-            camera.stop()
-            camera.close()
-            logging.info("Camera released")
+    camera.stop()
+    camera.close()
+    logging.info("Camera released")
 
 # Start the image fetching thread
 image_thread = threading.Thread(target=fetch_images_from_camera)
