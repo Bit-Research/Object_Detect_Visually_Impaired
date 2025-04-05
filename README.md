@@ -18,13 +18,11 @@ $ nano camera_test.py                                                           
 
 $ sudo apt install picamera2  
 
-$ python3 camera_test.py
-
 $ python3 -m venv myenv                                                               #To create a Virtual environment we use this cmd
-
 
 $ source /home/pi/myenv/bin/activate 
 
+$python3 -m venv myenv --system-site-packages
 
 $ git pull origin main
 
