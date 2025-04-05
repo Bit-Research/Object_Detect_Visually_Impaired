@@ -51,3 +51,23 @@ $ nano /home/pi/camera_test.py
 $ python3 /home/pi/camera_test.py
 
 $ python3 main.py
+
+$ sudo raspi-config
+
+$ raspi-gpio set "GPIO pin no" dl
+
+$ raspi-gpio set "GPIO pin no" dh
+
+$ raspi-gpio get
+
+$ sudo lsof /dev/gpiomem
+
+$ sudo reboot
+
+$ pinctrl-h
+
+$ pinctrl
+
+$ pinctr1 set "GPIO pin no" op
+
+$ pinctrl set "GPIO pin no" dh
