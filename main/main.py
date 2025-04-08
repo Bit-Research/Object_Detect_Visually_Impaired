@@ -11,6 +11,43 @@ from pydub.playback import play
 import RPi.GPIO as GPIO
 from picamera2 import Picamera2
 from PIL import Image
+# Set up GPIO mode
+GPIO.setmode(GPIO.BCM)
+import time
+
+# Define GPIO pins
+TRIG = 22
+ECHO = 23
+
+# Set up GPIO pins as output (TRIG) and input (ECHO)
+GPIO.setup(TRIG, GPIO.OUT)
+GPIO.setup(ECHO, GPIO.IN)
+
+event=threading.Event()
+
+def get_distance():
+    # Ensure the TRIG pin is low initially
+    GPIO.output(TRIG, GPIO.LOW)
+    time.sleep(0.5)
+
+    # Send a pulse to trigger the sensor
+    GPIO.output(TRIG, GPIO.HIGH)
+    time.sleep(0.00001)  # 10 microseconds pulse
+    GPIO.output(TRIG, GPIO.LOW)
+
+    # Measure the time it takes for the echo to return
+    while GPIO.input(ECHO) == GPIO.LOW:
+        pulse_start = time.time()
+
+    while GPIO.input(ECHO) == GPIO.HIGH:
+        pulse_end = time.time()
+
+    # Calculate the distance
+    pulse_duration = pulse_end - pulse_start
+    distance = pulse_duration * 17150  # Speed of sound: 343 m/s or 17150 cm/s
+    distance = round(distance, 2)  # Round the result to 2 decimal places
+
+    return distance
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -106,6 +143,7 @@ def fetch_images_from_camera():
     
     while True:
         try:
+            event.wait()
             # Capture an image
             frame = camera.capture_array()
 
@@ -140,6 +178,30 @@ def fetch_images_from_camera():
 # Start the image fetching thread
 image_thread = threading.Thread(target=fetch_images_from_camera)
 image_thread.start()
+
+def find_obj_distance():
+    try:
+        while True:
+            distance = get_distance()
+            print(f"Distance: {distance} cm")
+
+            if distance < 10:
+                print("Object detected!")
+                event.set()
+            else:
+                print("No object detected.")
+                
+
+            time.sleep(1)  # Wait for 1 second before the next reading
+
+    except KeyboardInterrupt:
+        print("Measurement stopped by User")
+        GPIO.cleanup()
+
+        # Start the image fetching thread
+obj_det_thread = threading.Thread(target=find_obj_distance)
+obj_det_thread.start()
+
 
 def send_emergency_email():
     smtp_server = 'smtp.gmail.com'
