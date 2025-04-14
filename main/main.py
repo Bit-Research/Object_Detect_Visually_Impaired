@@ -1,64 +1,82 @@
 import base64
 import io
-import logging
-import requests
-import numpy as np
 import json
+import logging
 import smtplib
 import threading
-from pydub import AudioSegment
-from pydub.playback import play
-import RPi.GPIO as GPIO
-from picamera2 import Picamera2
-from PIL import Image
-# Set up GPIO mode
-GPIO.setmode(GPIO.BCM)
 import time
 
-# Define GPIO pins
-TRIG = 22
-ECHO = 23
+import numpy as np
+import requests
+from PIL import Image
+from pydub import AudioSegment
+from pydub.playback import play
+from picamera2 import Picamera2
+import RPi.GPIO as GPIO
 
-# Set up GPIO pins as output (TRIG) and input (ECHO)
-GPIO.setup(TRIG, GPIO.OUT)
-GPIO.setup(ECHO, GPIO.IN)
+# --- CONFIGURATION ---
 
-event=threading.Event()
+SERVER_URL = "http://34.93.156.134:5000/web_server"
+EMAIL_SENDER = 'ammu201995@gmail.com'
+EMAIL_PASSWORD = 'msaphdugxxbjyztw'
+EMAIL_RECEIVER = 'rodriguz3071@gmail.com'
+
+TRIG, ECHO = 22, 23
+EMERGENCY_PIN, OCR_PIN = 18, 19
+
+event = threading.Event()
+audio_lock = threading.Lock()
+
+# --- GPIO SETUP ---
+
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(TRIG, GPIO.OUT)
+    GPIO.setup(ECHO, GPIO.IN)
+    GPIO.setup(EMERGENCY_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(OCR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# --- CAMERA SETUP ---
+
+camera = Picamera2()
+camera.configure(camera.create_preview_configuration())
+camera.start()
+frame_lock = threading.Lock()
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- UTILS ---
 
 def get_distance():
-    # Ensure the TRIG pin is low initially
     GPIO.output(TRIG, GPIO.LOW)
     time.sleep(0.5)
 
-    # Send a pulse to trigger the sensor
     GPIO.output(TRIG, GPIO.HIGH)
-    time.sleep(0.00001)  # 10 microseconds pulse
+    time.sleep(0.00001)
     GPIO.output(TRIG, GPIO.LOW)
 
-    # Measure the time it takes for the echo to return
     while GPIO.input(ECHO) == GPIO.LOW:
         pulse_start = time.time()
-
     while GPIO.input(ECHO) == GPIO.HIGH:
         pulse_end = time.time()
 
-    # Calculate the distance
     pulse_duration = pulse_end - pulse_start
-    distance = pulse_duration * 17150  # Speed of sound: 343 m/s or 17150 cm/s
-    distance = round(distance, 2)  # Round the result to 2 decimal places
-
+    distance = round(pulse_duration * 17150, 2)
     return distance
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def get_frame():
+    with frame_lock:
+        return camera.capture_array()
 
-SERVER_URL = "http://34.93.156.134:5000/web_server"
-
-# Create a lock for audio playback
-audio_lock = threading.Lock()
+def encode_image(image):
+    if image.mode == 'RGBA':
+        image = image.convert('RGB')
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def send_request(service, req_type, params, email=None, phone=None):
-    """Send request to the server and handle FUTURE_CALL polling."""
     payload = {
         "service_name": service,
         "sub_json": params,
@@ -68,174 +86,133 @@ def send_request(service, req_type, params, email=None, phone=None):
         payload["mail_id"] = email
     if phone:
         payload["phone_no"] = phone
+
     try:
         response = requests.post(SERVER_URL, json=payload)
         response.raise_for_status()
-        response_json = response.json()
-        # Handle FUTURE_CALL polling
-        if req_type == "FUTURE_CALL" and response_json.get("status") == "IN_PROGRESS":
-            request_id = response_json.get("request_id")
-            logging.info(f"Request ID {request_id} is processing. Checking for results...")
-            check_future_call_result(request_id, service, params)
-        return response_json
+        return response.json()
     except requests.exceptions.RequestException as e:
         logging.error(f"RequestException: {e}")
-        return None
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
-        return None
+    return None
 
 def decode_and_play_audio(encoded_audio):
-    """Decode Base64 encoded audio and play it."""
     try:
-        logging.info("Decoding audio...")
+        logging.info("Decoding and playing audio...")
         audio_bytes = base64.b64decode(encoded_audio)
-        audio_buffer = io.BytesIO(audio_bytes)
-        audio = AudioSegment.from_file(audio_buffer, format="wav")
-        logging.info("Playing audio...")
-        
-        # Play audio in a separate thread to avoid blocking
-        with audio_lock:
-            play(audio)
-        logging.info("Audio playback completed.")
+        with io.BytesIO(audio_bytes) as audio_buffer:
+            audio = AudioSegment.from_file(audio_buffer, format="wav")
+            with audio_lock:
+                play(audio)
     except Exception as e:
         logging.error(f"Error playing audio: {e}")
-    finally:
-        audio_buffer.close()
-        logging.info("Audio buffer closed.")
 
-def loud_Object(image, output_json):
-    """
-    Display the results of object detection.
-    
-    Args:
-        output_json: JSON object containing detected objects and class labels.
-    """
+def loud_object(image, output_json):
     try:
         results = json.loads(output_json)
         if results.get('status') != 'SUCCESS':
-            logging.error(f"Error: {results.get('error')}")
+            logging.error(f"Object Detection Error: {results.get('error')}")
             return
-        
-        detected_objects = results['detected_objects']
-        annotated_image = image.copy()
-        for obj in detected_objects:
-            x, y, w, h = obj['bbox']['x'], obj['bbox']['y'], obj['bbox']['width'], obj['bbox']['height']
-            class_name = obj['class']
-            confidence = obj['confidence']
-            color = obj['color']        
-            text_json = {"text": class_name}
-            output_json = send_request("text_to_speech", "INLINE", text_json)
-            if output_json['status'] == "SUCCESS":
-                logging.info("Playing audio now...")
-                #threading.Thread(target=decode_and_play_audio, args=(output_json['data'],)).start()
-                decode_and_play_audio(output_json['data'])
+
+        for obj in results['detected_objects']:
+            text_json = {"text": obj['class']}
+            response = send_request("text_to_speech", "INLINE", text_json)
+            if response and response['status'] == "SUCCESS":
+                decode_and_play_audio(response['data'])
+
     except Exception as e:
-        logging.error(f"Failed to display results: {str(e)}")
+        logging.error(f"Failed to process object detection: {e}")
 
 def fetch_images_from_camera():
-    """Continuously fetch images from the camera and process them."""
-    camera = Picamera2()
-    camera.configure(camera.create_preview_configuration())
-
-    # Start the camera
-    camera.start() 
-    
-    while True:
-        try:
+    try:
+        while True:
             event.wait()
-            # Capture an image
-            frame = camera.capture_array()
-
-            # Convert the frame to a PIL image
+            frame = get_frame()
             image = Image.fromarray(frame)
-            # Convert RGBA to RGB
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')            
-          
-            # Encode the image as base64
-            buffered = io.BytesIO()
-            image.save(buffered, format="JPEG")
-            image_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            
-            # Create the sub_json object with image data
-            image_json = {"image_b64": image_b64}
-            
-            output_json = send_request("ObjDetection", "INLINE", image_json)
-            if output_json and output_json['status'] == "SUCCESS":
-                logging.info("Received successful response from ObjDetection.")
-                loud_Object(frame, output_json['data'])
+            image_b64 = encode_image(image)
+
+            response = send_request("ObjDetection", "INLINE", {"image_b64": image_b64})
+            if response and response['status'] == "SUCCESS":
+                loud_object(frame, response['data'])
             else:
-                logging.error(f"Failed to get a successful response: {output_json}")
-            
-        except Exception as e:
-            logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
+                logging.error(f"Object Detection failed: {response}")
 
-    camera.stop()
-    camera.close()
-    logging.info("Camera released")
+            event.clear()
 
-# Start the image fetching thread
-image_thread = threading.Thread(target=fetch_images_from_camera)
-image_thread.start()
+    except Exception as e:
+        logging.error(f"Error in fetch_images_from_camera: {e}")
+    finally:
+        camera.stop()
+        camera.close()
+        logging.info("Camera stopped and closed.")
 
-def find_obj_distance():
+def fetch_text_from_camera(_=None):
+    try:
+        frame = get_frame()
+        image = Image.fromarray(frame)
+        image_b64 = encode_image(image)
+
+        response = send_request("ocr_detect", "INLINE", {"image_b64": image_b64})
+        if response and response['status'] == "SUCCESS":
+            tts_response = send_request("text_to_speech", "INLINE", {"text": response['data']})
+            if tts_response and tts_response['status'] == "SUCCESS":
+                decode_and_play_audio(tts_response['data'])
+            else:
+                logging.error(f"TTS failed: {tts_response}")
+        else:
+            logging.error(f"OCR failed: {response}")
+    except Exception as e:
+        logging.error(f"Error in fetch_text_from_camera: {e}")
+
+def monitor_object_distance():
     try:
         while True:
             distance = get_distance()
-            print(f"Distance: {distance} cm")
-
+            logging.info(f"Distance: {distance} cm")
             if distance < 10:
-                print("Object detected!")
+                logging.info("Object detected!")
                 event.set()
-            else:
-                print("No object detected.")
-                
-
-            time.sleep(1)  # Wait for 1 second before the next reading
-
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("Measurement stopped by User")
         GPIO.cleanup()
 
-        # Start the image fetching thread
-obj_det_thread = threading.Thread(target=find_obj_distance)
-obj_det_thread.start()
-
-
 def send_emergency_email():
-    smtp_server = 'smtp.gmail.com'
-    smtp_port = 587
-    sender_email = 'ammu201995@gmail.com'
-    sender_password = 'msaphdugxxbjyztw' # Use app-specific password if 2FA is enabled
-    recipient_email = 'rodriguz3071@gmail.com'
     subject = 'Emergency Alert'
     body = 'This is an emergency message.'
     email_message = f"Subject: {subject}\n\n{body}"
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, email_message)
-            logging.info("Emergency email sent successfully!")
-    except smtplib.SMTPAuthenticationError:
-        logging.error("Failed to authenticate. Check your email and password.")
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
 
-# Setup GPIO for emergency button
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, email_message)
+            logging.info("Emergency email sent successfully!")
+    except Exception as e:
+        logging.error(f"Failed to send emergency email: {e}")
 
 def emergency_button_callback(channel):
     send_emergency_email()
 
-GPIO.add_event_detect(18, GPIO.FALLING, callback=emergency_button_callback, bouncetime=300)
-logging.info("Press the emergency button to send an emergency email.")
+# --- MAIN EXECUTION ---
 
-try:
-    while True:
-        pass
-except KeyboardInterrupt:
-    GPIO.cleanup()
-    logging.info("GPIO cleanup done.")
+if __name__ == "__main__":
+    setup_gpio()
+
+    GPIO.add_event_detect(EMERGENCY_PIN, GPIO.FALLING, callback=emergency_button_callback, bouncetime=300)
+    GPIO.add_event_detect(OCR_PIN, GPIO.FALLING, callback=fetch_text_from_camera, bouncetime=300)
+
+    image_thread = threading.Thread(target=fetch_images_from_camera)
+    distance_thread = threading.Thread(target=monitor_object_distance)
+
+    image_thread.start()
+    distance_thread.start()
+
+    logging.info("System initialized. Waiting for input...")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        GPIO.cleanup()
+        logging.info("System terminated and GPIO cleaned up.")
