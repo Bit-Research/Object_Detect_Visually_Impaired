@@ -155,12 +155,13 @@ def fetch_text_from_camera(_=None):
 
         response = send_request("ocr_detect", "INLINE", {"image_b64": image_b64})
         logging.info(f"Received from OCR {response}")
-        if response and response['status'] == "SUCCESS" and response['data']:
-            tts_response = send_request("text_to_speech", "INLINE", {"text": response['data']})
-            if tts_response and tts_response['status'] == "SUCCESS":
-                decode_and_play_audio(tts_response['data'])
-            else:
-                logging.error(f"TTS failed: {tts_response}")
+        if response and response['status'] == "SUCCESS":
+            if response['data']:
+                tts_response = send_request("text_to_speech", "INLINE", {"text": response['data']})
+                if tts_response and tts_response['status'] == "SUCCESS":
+                    decode_and_play_audio(tts_response['data'])
+                else:
+                    logging.error(f"TTS failed: {tts_response}")
         else:
             logging.error(f"OCR failed: {response}")
     except Exception as e:
