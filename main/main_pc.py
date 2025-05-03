@@ -1,26 +1,51 @@
 import base64
 import io
-import logging
-import sys
-import os
-import requests
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-from pydub import AudioSegment
-from pydub.playback import play
-import threading
 import json
+import logging
 import smtplib
+import threading
+import time
+import cv2
 import keyboard
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import requests
+import numpy as np
+from PIL import Image
+from pydub import AudioSegment
+from pydub.playback import play
+
+# --- CONFIGURATION ---
 
 SERVER_URL = "http://34.93.156.134:5000/web_server"
+EMAIL_SENDER = 'ammu201995@gmail.com'
+EMAIL_PASSWORD = 'msaphdugxxbjyztw'
+EMAIL_RECEIVER = 'rodriguz3071@gmail.com'
+
+event = threading.Event()
+audio_lock = threading.Lock()
+frame_lock = threading.Lock()
+
+# OpenCV Camera Setup
+camera = cv2.VideoCapture(0)
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- UTILS ---
+
+def get_frame():
+    with frame_lock:
+        ret, frame = camera.read()
+        return frame if ret else None
+
+def encode_image(image):
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(image_rgb)
+    buffered = io.BytesIO()
+    pil_image.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 def send_request(service, req_type, params, email=None, phone=None):
-    """Send request to the server and handle FUTURE_CALL polling."""
     payload = {
         "service_name": service,
         "sub_json": params,
@@ -30,135 +55,118 @@ def send_request(service, req_type, params, email=None, phone=None):
         payload["mail_id"] = email
     if phone:
         payload["phone_no"] = phone
+
     try:
         response = requests.post(SERVER_URL, json=payload)
         response.raise_for_status()
-        response_json = response.json()
-        # Handle FUTURE_CALL polling
-        if req_type == "FUTURE_CALL" and response_json.get("status") == "IN_PROGRESS":
-            request_id = response_json.get("request_id")
-            logging.info(f"Request ID {request_id} is processing. Checking for results...")
-            check_future_call_result(request_id, service, params)
-        return response_json
-    except requests.exceptions.RequestException as e:
-        logging.error(f"RequestException: {e}")
-        return None
+        return response.json()
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        return None
+        logging.error(f"Request failed: {e}")
+    return None
 
 def decode_and_play_audio(encoded_audio):
-    """Decode Base64 encoded audio and play it."""
     try:
-        logging.info("Decoding audio...")
         audio_bytes = base64.b64decode(encoded_audio)
-        audio_buffer = io.BytesIO(audio_bytes)
-        audio = AudioSegment.from_file(audio_buffer, format="wav")
-        logging.info("Playing audio...")
-        
-        # Play audio in a separate thread to avoid blocking
-        threading.Thread(target=play, args=(audio,)).start()
-        logging.info("Audio playback started in a separate thread.")
+        with io.BytesIO(audio_bytes) as audio_buffer:
+            audio = AudioSegment.from_file(audio_buffer, format="wav")
+            with audio_lock:
+                play(audio)
     except Exception as e:
         logging.error(f"Error playing audio: {e}")
-    finally:
-        audio_buffer.close()
-        logging.info("Audio buffer closed.")
 
-def show_loud_Object(image, output_json):
-    """
-    Display the results of object detection.
-    
-    Args:
-        output_json: JSON object containing detected objects and class labels.
-    """
+def loud_object(image, output_json):
     try:
         results = json.loads(output_json)
         if results.get('status') != 'SUCCESS':
-            logging.error(f"Error: {results.get('error')}")
+            logging.error(f"Detection error: {results.get('error')}")
             return
-        
-        detected_objects = results['detected_objects']
-        annotated_image = image.copy()
-        for obj in detected_objects:
-            x, y, w, h = obj['bbox']['x'], obj['bbox']['y'], obj['bbox']['width'], obj['bbox']['height']
-            class_name = obj['class']
-            confidence = obj['confidence']
-            color = obj['color']
-            cv2.rectangle(annotated_image, (x, y), (x + w, y + h), color, 2)
-            label = f"{class_name}: {confidence:.2f}"
-            cv2.putText(annotated_image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        cv2.imshow('Annotated Image', annotated_image)
-        cv2.waitKey(1)
-        
-        text_json = {"text": class_name}
-        output_json = send_request("text_to_speech", "INLINE", text_json)
-        #logging.info(output_json)
-        if output_json['status'] == "SUCCESS":
-            logging.info("Playing audio now...")
-            decode_and_play_audio(output_json['data'])
+
+        for obj in results['detected_objects']:
+            text_json = {"text": obj['class']}
+            response = send_request("text_to_speech", "INLINE", text_json)
+            if response and response['status'] == "SUCCESS" and response['data']:
+                decode_and_play_audio(response['data'])
+
     except Exception as e:
-        logging.error(f"Failed to display results: {str(e)}")
+        logging.error(f"Failed to process object detection: {e}")
 
 def fetch_images_from_camera():
-    """Continuously fetch images from the camera and process them."""
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        logging.error("Failed to open camera.")
-        return
-    
     while True:
-        try:
-            ret, frame = cap.read()
-            if not ret:
-                logging.error("Failed to capture image from camera.")
-                continue
-            
-            # Encode the frame as base64
-            _, buffer = cv2.imencode('.jpg', frame)
-            image_b64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Create the sub_json object with image data
-            image_json = {"image_b64": image_b64}
-            
-            output_json = send_request("ObjDetection", "INLINE", image_json)
-            if output_json and output_json['status'] == "SUCCESS":
-                logging.info("Received successful response from ObjDetection.")
-                show_loud_Object(frame, output_json['data'])
-            else:
-                logging.error(f"Failed to get a successful response: {output_json}")
-        except Exception as e:
-            logging.error(f"Unexpected error in fetch_images_from_camera: {str(e)}")
-            break
-    
-    cap.release()
-    cv2.destroyAllWindows()
-    logging.info("Camera released and windows destroyed.")
+        frame = get_frame()
+        if frame is not None:
+            cv2.imshow("Live Camera", frame)
+            cv2.waitKey(1)  # Non-blocking wait
+        time.sleep(0.03)
 
-# Start the image fetching thread
-image_thread = threading.Thread(target=fetch_images_from_camera)
-image_thread.start()
+def trigger_object_detection():
+    while True:
+        if keyboard.is_pressed("o"):  # Press 'o' to trigger object detection
+            frame = get_frame()
+            if frame is None:
+                continue
+            image_b64 = encode_image(frame)
+            response = send_request("ObjDetection", "INLINE", {"image_b64": image_b64})
+            if response and response['status'] == "SUCCESS" and response['data']:
+                loud_object(frame, response['data'])
+            else:
+                logging.error("Object detection failed or empty response.")
+            time.sleep(1)  # Prevent multiple triggers
+
+def trigger_text_ocr():
+    while True:
+        if keyboard.is_pressed("t"):  # Press 't' to trigger OCR
+            frame = get_frame()
+            if frame is None:
+                continue
+            image_b64 = encode_image(frame)
+            response = send_request("ocr_detect", "INLINE", {"image_b64": image_b64})
+            if response and response['status'] == "SUCCESS":
+                if response['data']:
+                    tts_response = send_request("text_to_speech", "INLINE", {"text": response['data']})
+                    if tts_response and tts_response['status'] == "SUCCESS" and tts_response['data']:
+                        decode_and_play_audio(tts_response['data'])
+                    else:
+                        logging.error("TTS failed or empty.")
+            else:
+                logging.error("OCR failed or empty response.")
+            time.sleep(1)
 
 def send_emergency_email():
-    smtp_server = 'smtp.gmail.com'
-    smtp_port = 587
-    sender_email = 'ammu201995@gmail.com'
-    sender_password = 'msaphdugxxbjyztw' # Use app-specific password if 2FA is enabled
-    recipient_email = 'rodriguz3071@gmail.com'
     subject = 'Emergency Alert'
     body = 'This is an emergency message.'
     email_message = f"Subject: {subject}\n\n{body}"
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, email_message)
-            logging.info("Emergency email sent successfully!")
-    except smtplib.SMTPAuthenticationError:
-        logging.error("Failed to authenticate. Check your email and password.")
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
 
-keyboard.add_hotkey('e', send_emergency_email)
-logging.info("Press 'E' to send an emergency email.")
-keyboard.wait('esc')
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, email_message)
+            logging.info("Emergency email sent successfully!")
+    except Exception as e:
+        logging.error(f"Failed to send emergency email: {e}")
+
+def emergency_monitor():
+    while True:
+        if keyboard.is_pressed("e"):  # Press 'e' to send emergency email
+            send_emergency_email()
+            time.sleep(1)
+
+# --- MAIN EXECUTION ---
+
+if __name__ == "__main__":
+    try:
+        # Start all threads
+        threading.Thread(target=fetch_images_from_camera, daemon=True).start()
+        threading.Thread(target=trigger_object_detection, daemon=True).start()
+        threading.Thread(target=trigger_text_ocr, daemon=True).start()
+        threading.Thread(target=emergency_monitor, daemon=True).start()
+
+        logging.info("System initialized. Press 'o' for object detection, 't' for OCR, 'e' for emergency email.")
+
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        camera.release()
+        cv2.destroyAllWindows()
+        logging.info("System shutdown. Camera released.")
